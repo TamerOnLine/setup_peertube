@@ -12,6 +12,7 @@ from textwrap import dedent
 
 PEERTUBE_REPO = "https://github.com/Chocobozzz/PeerTube.git"
 PEERTUBE_BRANCH = "production"
+
 PT_USER_DEFAULT = "peertube"
 PT_HOME = "/var/www"
 NGINX_SITE = "/etc/nginx/sites-available/peertube"
