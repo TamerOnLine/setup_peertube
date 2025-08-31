@@ -194,16 +194,42 @@ def clone_or_update(pt_dir: Path, pt_user: str):
             checkout_ref_if_needed()
 
 # === Yarn/Build ===
+def add_swap_if_needed(size_gb=4):
+    """إضافة Swap إذا لم يكن موجوداً"""
+    swapfile = Path("/swapfile")
+    if swapfile.exists():
+        log("Swapfile already exists, skipping creation.")
+        return
+    log(f"Creating {size_gb}G swapfile ...")
+    run(f"fallocate -l {size_gb}G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count={size_gb*1024}", shell=True, check=False)
+    run("chmod 600 /swapfile", shell=True)
+    run("mkswap /swapfile", shell=True)
+    run("swapon /swapfile", shell=True)
+    with open("/etc/fstab", "a", encoding="utf-8") as f:
+        f.write("/swapfile none swap sw 0 0\n")
+    run("sysctl vm.swappiness=10", shell=True, check=False)
+    with open("/etc/sysctl.conf", "a", encoding="utf-8") as f:
+        f.write("vm.swappiness=10\n")
+
 def yarn_install_and_build(pt_dir: Path, pt_user: str):
     run("yarn install --pure-lockfile", user=pt_user, cwd=str(pt_dir))
+
     env = os.environ.copy()
     env["NODE_OPTIONS"] = env.get("NODE_OPTIONS", "--max-old-space-size=1536")
+
     try:
         run("yarn build", user=pt_user, cwd=str(pt_dir), env=env)
-    except subprocess.CalledProcessError:
-        run("yarn cache clean", user=pt_user, cwd=str(pt_dir), env=env, check=False)
-        env["YARN_HTTP_TIMEOUT"] = "600000"
-        run("yarn build", user=pt_user, cwd=str(pt_dir), env=env)
+    except subprocess.CalledProcessError as e:
+        if e.returncode == 137:
+            warn("Build killed due to out-of-memory (137). Adding swap and retrying ...")
+            add_swap_if_needed(4)
+            run("yarn build", user=pt_user, cwd=str(pt_dir), env=env)
+        else:
+
+            run("yarn cache clean", user=pt_user, cwd=str(pt_dir), env=env, check=False)
+            env["YARN_HTTP_TIMEOUT"] = "600000"
+            run("yarn build", user=pt_user, cwd=str(pt_dir), env=env)
+
 
 # === production.yaml ===
 def build_production_yaml_from_env():
