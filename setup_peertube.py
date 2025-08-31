@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-setup_peertube.py
-تثبيت PeerTube تلقائيًا على Ubuntu 22.04/24.04:
-- تحديث الحزم وتثبيت Node 20 + Yarn، PostgreSQL + Redis + ffmpeg + Nginx
-- إنشاء مستخدم/قاعدة بيانات
+setup_peertube.py — تثبيت PeerTube تلقائيًا على Ubuntu 22.04/24.04
+
+- تثبيت المتطلبات (Node 20 + Yarn، Postgres، Redis، ffmpeg، Nginx)
+- إعداد مستخدم وقاعدة بيانات
 - جلب PeerTube من المستودع الرسمي (بدون افتراض اسم فرع)
-- تثبيت اعتمادات Node
-- توليد config/production.yaml من pt.env
-- إعداد Nginx + خدمة systemd
-- (اختياري) فتح منافذ UFW إن وُجد
+- تثبيت الاعتمادات + build
+- كتابة config/production.yaml من pt.env (إن وُجد)
+- إعداد Nginx و systemd وفتح منافذ UFW
+- (اختياري) SSL عبر certbot إذا PT_HTTPS=true و PT_DOMAIN دومين (ليس IP)
 """
 
 import os
@@ -20,15 +20,14 @@ import sys
 from pathlib import Path
 from textwrap import dedent
 
-# === إعدادات المستودع (لا تفترض فرعًا ثابتًا) ===
 PEERTUBE_REPO = "https://github.com/Chocobozzz/PeerTube.git"
-# مرجع اختياري: فرع أو وسم (tag). مثال: "main" أو "v7.2.3".
-# إذا تُرك فارغًا → يستخدم الفرع الافتراضي للمستودع.
+
 PEERTUBE_REF  = os.environ.get("PEERTUBE_REF", "").strip()
 
-# === مسارات وخدمة ===
 PT_USER_DEFAULT = "peertube"
 PT_HOME = "/var/www"
+PT_DIR  = Path(PT_HOME) / "peertube"
+
 NGINX_SITE = "/etc/nginx/sites-available/peertube"
 NGINX_LINK = "/etc/nginx/sites-enabled/peertube"
 SYSTEMD_UNIT = "/etc/systemd/system/peertube.service"
@@ -37,10 +36,6 @@ def log(m): print(f"[i] {m}")
 def warn(m): print(f"[!] {m}", file=sys.stderr)
 
 def run(cmd, *, check=True, shell=False, user=None, cwd=None, env=None):
-    """
-    تنفيذ أمر مع طباعة. استخدم shell=True عند تمرير متغيرات بيئة inline مثل:
-    DEBIAN_FRONTEND=noninteractive apt-get ...
-    """
     if isinstance(cmd, str):
         show = cmd
         cmd_list = cmd if shell else shlex.split(cmd)
@@ -62,8 +57,7 @@ def run(cmd, *, check=True, shell=False, user=None, cwd=None, env=None):
 
 def need_root():
     if os.geteuid() != 0:
-        warn("Run as root.")
-        sys.exit(1)
+        warn("Run as root."); sys.exit(1)
 
 def get_env_bool(k, default=False):
     v = os.environ.get(k, str(default)).strip().lower()
@@ -79,40 +73,36 @@ def detect_ipv4():
     except Exception:
         return "127.0.0.1"
 
-def is_ipv4(h):
-    return bool(re.match(r"^\d{1,3}(\.\d{1,3}){3}$", str(h).strip()))
+def is_ipv4(host):
+    return bool(re.match(r"^\d{1,3}(\.\d{1,3}){3}$", str(host).strip()))
 
 def load_pt_env_if_exists():
     p = Path("pt.env")
     if not p.exists():
-        warn("pt.env not found; using defaults.")
         return
     for line in p.read_text(encoding="utf-8").splitlines():
         s = line.strip()
-        if not s or s.startswith("#"):
-            continue
+        if not s or s.startswith("#"): continue
         if "=" in s:
             k, v = s.split("=", 1)
             os.environ[k.strip()] = v.strip().strip('"').strip("'")
 
-# === تثبيت الحزم ===
 def ensure_packages():
-    log("Update & base packages...")
+    log("Update & install base packages ...")
     run("apt-get update -y", shell=True)
-    run("DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget gnupg lsb-release unzip git vim ca-certificates ufw", shell=True)
+    run("DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget gnupg lsb-release unzip git vim ca-certificates ufw jq", shell=True)
 
-    log("Install Node.js 20 + Yarn...")
+    log("Install Node.js 20 + Yarn ...")
     if subprocess.run(["bash","-lc","node -v | grep -q '^v20'"]).returncode != 0:
         run("curl -fsSL https://deb.nodesource.com/setup_20.x | bash -", shell=True)
         run("apt-get install -y nodejs", shell=True)
     if subprocess.run(["bash","-lc","command -v yarn >/dev/null 2>&1"]).returncode != 0:
         run("npm install -g yarn", shell=True, check=False)
 
-    log("Install Postgres/Redis/ffmpeg/Nginx...")
+    log("Install Postgres/Redis/ffmpeg/Nginx ...")
     run("DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql postgresql-contrib redis-server ffmpeg nginx", shell=True)
-    run("systemctl enable --now redis-server postgresql nginx", check=False)
+    run("systemctl enable --now postgresql redis-server nginx", check=False)
 
-# === مستخدم وخدمة قاعدة البيانات ===
 def ensure_pt_user(user, home):
     import pwd
     try:
@@ -123,21 +113,21 @@ def ensure_pt_user(user, home):
     Path(home).mkdir(parents=True, exist_ok=True)
 
 def ensure_db(db_user, db_pass, db_name):
-    log("Configure PostgreSQL...")
-    q1 = f"SELECT 1 FROM pg_roles WHERE rolname='{db_user}'"
-    q2 = f"SELECT 1 FROM pg_database WHERE datname='{db_name}'"
-    r = subprocess.run(f"sudo -u postgres psql -tAc \"{q1}\"", shell=True, text=True, capture_output=True)
-    if "1" not in r.stdout:
-        pw = db_pass.replace("'", "''")  # SQL escape
+    log("Configure PostgreSQL user & database ...")
+    q_user = f"SELECT 1 FROM pg_roles WHERE rolname='{db_user}'"
+    q_db   = f"SELECT 1 FROM pg_database WHERE datname='{db_name}'"
+
+    r1 = subprocess.run(f"sudo -u postgres psql -tAc \"{q_user}\"", shell=True, text=True, capture_output=True)
+    if "1" not in r1.stdout:
+        pw = db_pass.replace("'", "''")
         run(f"sudo -u postgres psql -c \"CREATE USER {db_user} WITH PASSWORD '{pw}';\"", shell=True)
-    r = subprocess.run(f"sudo -u postgres psql -tAc \"{q2}\"", shell=True, text=True, capture_output=True)
-    if "1" not in r.stdout:
+
+    r2 = subprocess.run(f"sudo -u postgres psql -tAc \"{q_db}\"", shell=True, text=True, capture_output=True)
+    if "1" not in r2.stdout:
         run(f"sudo -u postgres psql -c \"CREATE DATABASE {db_name} OWNER {db_user};\"", shell=True)
 
-# === جلب/تحديث PeerTube من المستودع ===
-def clone_or_update_peertube(pt_dir: Path, pt_user: str):
+def clone_or_update(pt_dir: Path, pt_user: str):
     if not pt_dir.exists():
-        # كلون بدون افتراض فرع
         run(f"git clone {PEERTUBE_REPO} {shlex.quote(str(pt_dir))}", shell=True)
         if PEERTUBE_REF:
             run(f"git checkout {shlex.quote(PEERTUBE_REF)}", user=pt_user, cwd=str(pt_dir))
@@ -148,10 +138,12 @@ def clone_or_update_peertube(pt_dir: Path, pt_user: str):
             run(f"git checkout {shlex.quote(PEERTUBE_REF)}", user=pt_user, cwd=str(pt_dir))
         run("git pull --ff-only", user=pt_user, cwd=str(pt_dir), check=False)
 
-    # تثبيت الاعتمادات
+def yarn_install_and_build(pt_dir: Path, pt_user: str):
+    run("yarn install --pure-lockfile", user=pt_user, cwd=str(pt_dir))
+    run("yarn build", user=pt_user, cwd=str(pt_dir))
     run("yarn install --production --pure-lockfile", user=pt_user, cwd=str(pt_dir))
 
-# === توليد production.yaml من pt.env ===
+
 def build_production_yaml_from_env():
     domain = os.environ.get("PT_DOMAIN", "").strip()
     https  = get_env_bool("PT_HTTPS", False)
@@ -182,10 +174,8 @@ def build_production_yaml_from_env():
     if not from_address:
         from_address = f"PeerTube <no-reply@{domain}>"
 
-    # خريطة الريزوليوشن
     res_keys = ["0p","144p","240p","360p","480p","720p","1080p","1440p","2160p"]
     res_map = {k: ("true" if k in resolutions else "false") for k in res_keys}
-
     secret_hex = os.urandom(32).hex()
 
     yml = f"""# Generated by setup_peertube.py
@@ -260,7 +250,6 @@ def write_production_yaml(pt_dir: Path, content: str, owner: str):
         pass
     log(f"Wrote {cfg}")
 
-# === Nginx (reverse proxy بسيط) ===
 def configure_nginx(server_name: str, web_port: int):
     if not server_name:
         server_name = "_"
@@ -269,6 +258,7 @@ def configure_nginx(server_name: str, web_port: int):
       server_name {server_name};
       listen 80;
       listen [::]:80;
+      client_max_body_size 2G;
       location / {{
         proxy_pass http://127.0.0.1:{web_port};
         proxy_http_version 1.1;
@@ -285,12 +275,19 @@ def configure_nginx(server_name: str, web_port: int):
     """).strip() + "\n"
     Path(NGINX_SITE).write_text(conf, encoding="utf-8")
     if not Path(NGINX_LINK).exists():
-        try:
-            os.symlink(NGINX_SITE, NGINX_LINK)
-        except FileExistsError:
-            pass
+        try: os.symlink(NGINX_SITE, NGINX_LINK)
+        except FileExistsError: pass
     run("nginx -t", shell=True)
     run("systemctl reload nginx", shell=True)
+
+def enable_https_if_possible(domain: str, https: bool):
+    if not https: return
+    if not domain or is_ipv4(domain):
+        warn("HTTPS requested but PT_DOMAIN is empty or an IP; skipping certbot.")
+        return
+    # certbot يُفضّل تنفيذه يدويًا إذا DNS جاهز؛ نحاول تلقائيًا:
+    run(f"DEBIAN_FRONTEND=noninteractive apt-get install -y certbot python3-certbot-nginx", shell=True, check=False)
+    run(f"certbot --nginx -d {shlex.quote(domain)} --non-interactive --agree-tos -m admin@{shlex.quote(domain)}", shell=True, check=False)
 
 def write_systemd_unit(pt_dir: Path, pt_user: str):
     unit = dedent(f"""
@@ -321,30 +318,29 @@ def ufw_open_http_https():
         run("ufw allow 80/tcp", shell=True, check=False)
         run("ufw allow 443/tcp", shell=True, check=False)
 
-# === main ===
 def main():
     need_root()
     load_pt_env_if_exists()
 
     pt_user = os.environ.get("PT_USER", PT_USER_DEFAULT)
-    pt_home = PT_HOME
-    pt_dir  = Path(pt_home) / "peertube"
-
     ensure_packages()
-    ensure_pt_user(pt_user, pt_home)
+    ensure_pt_user(pt_user, PT_HOME)
+
     ensure_db(
         os.environ.get("PT_DB_USER", "peertube"),
         os.environ.get("PT_DB_PASS", "CHANGE_ME_DB_PASS"),
         os.environ.get("PT_DB_NAME", "peertube"),
     )
 
-    clone_or_update_peertube(pt_dir, pt_user)
+    clone_or_update(PT_DIR, pt_user)
+    yarn_install_and_build(PT_DIR, pt_user)
 
     yml, domain, https, web_port = build_production_yaml_from_env()
-    write_production_yaml(pt_dir, yml, pt_user)
+    write_production_yaml(PT_DIR, yml, pt_user)
 
     configure_nginx(domain, web_port)
-    write_systemd_unit(pt_dir, pt_user)
+    enable_https_if_possible(domain, https)
+    write_systemd_unit(PT_DIR, pt_user)
     ufw_open_http_https()
 
     proto = "https" if https else "http"
