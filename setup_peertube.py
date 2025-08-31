@@ -142,7 +142,7 @@ def ensure_pt_user(user, home):
         pwd.getpwnam(user)
         log(f"user {user} exists")
     except KeyError:
-        run(["adduser", "--disabled-password", "--gecos", "", user])
+        run(["adduser", "--disabled-login", "--gecos", "", user])
     Path(home).mkdir(parents=True, exist_ok=True)
 
 def ensure_db(db_user, db_pass, db_name):
