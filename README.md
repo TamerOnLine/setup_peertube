@@ -1,86 +1,118 @@
-# setup_peertube
+# PeerTube Auto Installer 🚀
 
-🚀 Quick installer for [PeerTube](https://joinpeertube.org/) on Ubuntu servers using GitHub.
+This repository provides a **one-click installer** for [PeerTube](https://joinpeertube.org/) on **Ubuntu 22.04 / 24.04** servers.  
+It automates the full setup:
 
----
-
-## 1. Manual Installation
-
-```bash
-# Clone this repository
-git clone https://github.com/TamerOnLine/setup_peertube.git
-cd setup_peertube
-
-# Edit environment variables (⚠️ set PT_DB_PASS and PT_DOMAIN!)
-nano pt.env
-
-# Run installer
-sudo bash install_peertube.sh
-```
+- Install required packages (Node.js 20, Yarn, PostgreSQL, Redis, ffmpeg, Nginx)
+- Create `peertube` system user and PostgreSQL database
+- Clone the official [PeerTube repo](https://github.com/Chocobozzz/PeerTube)
+- Build frontend/backend using Yarn
+- Auto-generate `config/production.yaml` from environment file (`pt.env`)
+- Configure Nginx reverse proxy (with WebSocket & optional HTTPS via certbot)
+- Create & enable `systemd` service
+- Open firewall (80/443)
 
 ---
 
-## 2. Cloud-Init (automatic on new server)
+## 📂 Repository Structure
 
-When creating a new Ubuntu server (22.04/24.04), paste this into the **User-Data / cloud-init** field:
-
-```yaml
-#cloud-config
-runcmd:
-  - git clone https://github.com/TamerOnLine/setup_peertube.git /root/setup_peertube
-  - cd /root/setup_peertube && bash install_peertube.sh
-```
-
-This will automatically pull the repo and run the installer on first boot.
+- **`install_peertube.sh`** → Bootstrap script (stops apt locks, installs Python, runs `setup_peertube.py`).  
+- **`setup_peertube.py`** → Main Python installer. Handles packages, DB, Git, Yarn build, config, Nginx, systemd.  
+- **`pt.env`** → Environment configuration file for PeerTube (domain, DB, SMTP, etc.).  
+- **`setup_peertube.yaml`** → Optional cloud-init file (for Hetzner / cloud providers).  
 
 ---
 
-## 3. Environment Variables (`pt.env`)
+## ⚙️ Requirements
 
-Before running the installer, edit `pt.env`:
-
-- `PT_DB_PASS` → Database password (**required**).  
-- `PT_DOMAIN` → Domain name or server IP (**required**).  
-- `PT_HTTPS` → `true` if you have a valid domain + SSL, otherwise `false`.  
-- `PT_WEB_PORT` → Web port (default `9000`).  
-- **SMTP settings** → Configure if you want emails (optional).  
-- `PT_INSTANCE_NAME` / `PT_INSTANCE_DESC` → Name & description of your instance.  
-- `PT_LANGUAGES` → Default languages (`en,de,ar`).  
-- `PT_RESOLUTIONS` → Video resolutions (`720p,1080p`).  
+- Fresh **Ubuntu 22.04 or 24.04** server
+- Root access (`ssh root@your-server-ip`)
+- Minimum **2 GB RAM** (+swap will be added automatically if needed)
+- Optional: Domain name (recommended for federation & OAuth)
 
 ---
 
-## 4. Service Management
+## 🛠️ Installation
 
-After installation, PeerTube runs as a systemd service:
+### Option 1: Cloud-init (auto at first boot)
+Copy the contents of `setup_peertube.yaml` into your cloud provider's **user-data**.  
+On first boot, PeerTube will be installed and started automatically.
 
-```bash
-# Check status
-sudo systemctl status peertube
+### Option 2: Manual Installation
+1. Clone the repo:
+   ```bash
+   git clone https://github.com/<your-org>/setup_peertube.git
+   cd setup_peertube
+   ```
 
-# Restart service
-sudo systemctl restart peertube
+2. Edit `pt.env`:
+   ```ini
+   PT_DOMAIN="videos.example.com"   # or leave empty → will fallback to server IP
+   PT_HTTPS=true                    # enable HTTPS if domain is used
+   PT_DB_PASS="your-strong-password"
+   PT_INSTANCE_NAME="MyTube"
+   PT_INSTANCE_DESC="Public PeerTube instance"
+   PT_LANGUAGES="en,de,ar"
+   PT_RESOLUTIONS="720p,1080p"
+   PEERTUBE_REF="v7.2.3"
+   ```
 
-# View logs
-sudo journalctl -u peertube -n 50 --no-pager
-```
+3. Run installer:
+   ```bash
+   bash install_peertube.sh
+   ```
 
 ---
 
-## 5. Access Your Instance
+## 🔑 Post-Install
 
-- If `PT_HTTPS=false` → **http://YOUR_DOMAIN_OR_IP**  
-- If `PT_HTTPS=true`  → **https://YOUR_DOMAIN**
+- Check status:
+  ```bash
+  systemctl status peertube
+  journalctl -u peertube -n 100 --no-pager
+  ```
+
+- Default URL:
+  ```
+  http://<your-domain-or-ip>
+  ```
+
+- If you set `PT_HTTPS=true` and domain → installer tries automatic **Let's Encrypt** via `certbot`.  
+- If no domain → PeerTube will run on your **IP**, but federation & OAuth features may be limited.
 
 ---
 
-## 6. Notes
+## 📌 Notes
 
-- Default database user: `peertube`  
-- Default database name: `peertube`  
-- Make sure ports 80/443 are open in firewall.  
-- If you use HTTPS, Certbot will auto-request a Let’s Encrypt certificate.  
+- **Swap**: If build fails with exit code 137 (out-of-memory), installer creates a **4G swapfile** automatically.  
+- **Nginx**: Adds `websocket_map.conf` to support WebSockets. If your `/etc/nginx/nginx.conf` doesn’t include `conf.d/*.conf`, add manually:
+  ```nginx
+  http {
+    include /etc/nginx/conf.d/*.conf;
+  }
+  ```
+- **SMTP**: Configure `pt.env` for email notifications (optional). Without SMTP, PeerTube runs but cannot send mails.
 
 ---
 
-✅ That’s it — simple PeerTube setup directly from GitHub!
+## 🧹 Management
+
+- Restart PeerTube:
+  ```bash
+  systemctl restart peertube
+  ```
+- Logs:
+  ```bash
+  journalctl -u peertube -f
+  ```
+- Nginx reload:
+  ```bash
+  systemctl reload nginx
+  ```
+
+---
+
+## 🤝 Credits
+
+- [PeerTube](https://github.com/Chocobozzz/PeerTube) (original software)  
+- This installer is maintained by **TamerOnLine**
