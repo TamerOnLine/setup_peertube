@@ -101,6 +101,7 @@ def ensure_packages():
 
     log("Install Postgres/Redis/ffmpeg/Nginx ...")
     run("DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql postgresql-contrib redis-server ffmpeg nginx", shell=True)
+
     run("systemctl enable --now postgresql redis-server nginx", check=False)
 
 def ensure_pt_user(user, home):
@@ -140,8 +141,16 @@ def clone_or_update(pt_dir: Path, pt_user: str):
 
 def yarn_install_and_build(pt_dir: Path, pt_user: str):
     run("yarn install --pure-lockfile", user=pt_user, cwd=str(pt_dir))
-    run("yarn build", user=pt_user, cwd=str(pt_dir))
-    run("yarn install --production --pure-lockfile", user=pt_user, cwd=str(pt_dir))
+
+    env = os.environ.copy()
+    env["NODE_OPTIONS"] = env.get("NODE_OPTIONS", "--max-old-space-size=1536")
+
+    try:
+        run("yarn build", user=pt_user, cwd=str(pt_dir), env=env)
+    except subprocess.CalledProcessError:
+        run("yarn cache clean", user=pt_user, cwd=str(pt_dir), env=env, check=False)
+        env["YARN_HTTP_TIMEOUT"] = "600000"
+        run("yarn build", user=pt_user, cwd=str(pt_dir), env=env)
 
 
 def build_production_yaml_from_env():
