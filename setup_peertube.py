@@ -87,12 +87,27 @@ def load_pt_env_if_exists():
 def ensure_packages():
     log("Update & install base packages ...")
     run("apt-get update -y", shell=True)
-    run(
-        "DEBIAN_FRONTEND=noninteractive apt-get install -y "
+
+    base_pkgs = (
         "curl wget gnupg lsb-release unzip git vim ca-certificates ufw jq "
-        "build-essential make g++ python3",
-        shell=True
+        "build-essential make g++ python3"
     )
+    svc_pkgs = "postgresql postgresql-contrib redis-server ffmpeg nginx"
+
+    def apt_install(pkgs):
+        run(f"DEBIAN_FRONTEND=noninteractive apt-get install -y {pkgs}", shell=True)
+
+    try:
+        apt_install(base_pkgs)
+    except subprocess.CalledProcessError as e:
+        if e.returncode == 100:
+            warn("apt-get failed (100). Trying dpkg repair...")
+            run("rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock", shell=True, check=False)
+            run("dpkg --configure -a", shell=True, check=False)
+            run("apt-get install -f -y", shell=True, check=False)
+            apt_install(base_pkgs)
+        else:
+            raise
 
     log("Install Node.js 20 + Yarn ...")
     if subprocess.run(["bash", "-lc", "node -v | grep -q '^v20'"]).returncode != 0:
@@ -102,11 +117,18 @@ def ensure_packages():
         run("npm install -g yarn", shell=True, check=False)
 
     log("Install Postgres/Redis/ffmpeg/Nginx ...")
-    run(
-        "DEBIAN_FRONTEND=noninteractive apt-get install -y "
-        "postgresql postgresql-contrib redis-server ffmpeg nginx",
-        shell=True
-    )
+    try:
+        apt_install(svc_pkgs)
+    except subprocess.CalledProcessError as e:
+        if e.returncode == 100:
+            warn("apt-get failed (100) during services install. Repairing and retrying...")
+            run("rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock", shell=True, check=False)
+            run("dpkg --configure -a", shell=True, check=False)
+            run("apt-get install -f -y", shell=True, check=False)
+            apt_install(svc_pkgs)
+        else:
+            raise
+
     run("systemctl enable --now postgresql redis-server nginx", check=False)
 
 def tune_sysctl():
